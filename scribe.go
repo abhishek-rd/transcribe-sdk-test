@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/transcribestreaming"
 	"github.com/hajimehoshi/oto"
+	"github.com/hajimehoshi/oto/audio"
 	"github.com/youpy/go-oggvorbis"
 )
 
@@ -42,81 +44,76 @@ func main() {
 		log.Fatal("Failed to decode audio file:", err)
 	}
 
-	// Create an audio stream for streaming transcription
-	audioStream := transcribestreaming.NewAudioEventStream()
+	// Create an audio context for streaming transcription
+	audioContext, err := oto.NewContext(decoder.SampleRate(), 1, 2, 8192)
+	if err != nil {
+		log.Fatal("Failed to create audio context:", err)
+	}
+	defer audioContext.Close()
 
 	// Start the transcription streaming job
-	startStreamTranscription(transcribeClient, audioStream, languageCode)
+	transcriptionStream, err := transcribeClient.StartStreamTranscriptionWithContext(context.Background(), &transcribestreaming.StartStreamTranscriptionInput{
+		LanguageCode:       aws.String(languageCode),
+		MediaEncoding:      aws.String(transcribestreaming.MediaEncodingOggOpus),
+		MediaSampleRateHertz: aws.Int64(int64(decoder.SampleRate())),
+	})
+	if err != nil {
+		log.Fatal("Failed to start transcription streaming:", err)
+	}
+
+	// Create an audio player for streaming audio
+	audioPlayer := audioContext.NewPlayer()
 
 	// Stream the audio data and send it for transcription
-	buffer := make([]int16, 1024)
+	bufferSize := 8192
+	buffer := make([]int16, bufferSize)
 	for {
-		_, err := decoder.Read(buffer)
+		n, err := decoder.Read(buffer)
 		if err != nil {
 			break
 		}
 
-		// Convert the audio data to PCM format
-		pcmData := int16ArrayToByte(buffer)
+		// Play the audio data
+		audioPlayer.Write(buffer[:n*2])
 
 		// Create an audio event for the PCM data
 		audioEvent := &transcribestreaming.AudioEvent{
-			AudioChunk: pcmData,
+			AudioChunk: int16ArrayToByte(buffer[:n]),
 		}
 
 		// Send the audio event to the transcription service
-		audioStream.Input <- audioEvent
-
-		// Delay to simulate real-time streaming (adjust as needed)
-		time.Sleep(100 * time.Millisecond)
+		_, err = transcriptionStream.AudioStream.Write(audioEvent.AudioChunk)
+		if err != nil {
+			log.Fatal("Failed to send audio chunk:", err)
+		}
 	}
-
-	// Close the audio stream
-	audioStream.Close()
 
 	// Wait for the transcription job to complete
-	waitForTranscriptionJob(transcribeClient)
-}
-
-// Start the transcription streaming job
-func startStreamTranscription(transcribeClient *transcribestreaming.TranscribeStreaming, audioStream *transcribestreaming.AudioEventStream, languageCode string) {
-	input := &transcribestreaming.StartStreamTranscriptionInput{
-		LanguageCode: aws.String(languageCode),
-		MediaSampleRateHertz: aws.Int64(48000), // Sample rate of the audio file (adjust as needed)
-		MediaEncoding:       aws.String(transcribestreaming.MediaEncodingOggOpus),
+	err = transcriptionStream.AudioStream.Close()
+	if err != nil {
+		log.Fatal("Failed to close audio stream:", err)
 	}
 
-	go func() {
-		_, err := transcribeClient.StartStreamTranscription(input, audioStream)
-		if err != nil {
-			log.Fatal("Failed to start transcription streaming:", err)
-		}
-	}()
-}
-
-// Wait for the transcription job to complete
-func waitForTranscriptionJob(transcribeClient *transcribestreaming.TranscribeStreaming) {
-	log.Println("Waiting for transcription job to complete...")
-
+	// Receive and print the transcription results
 	for {
-		// Check the status of the transcription job
-		// You can add logic here to handle interim results if desired
-		output, err := transcribeClient.DescribeStreamTranscriptionJob(&transcribestreaming.DescribeStreamTranscriptionJobInput{})
+		resp, err := transcriptionStream.Recv()
 		if err != nil {
-			log.Fatal("Failed to describe transcription job:", err)
+			log.Fatal("Failed to receive transcription response:", err)
 		}
 
-		jobStatus := aws.StringValue(output.StreamTranscriptionJob.StreamTranscriptionJobStatus)
-		if jobStatus == transcribestreaming.StreamTranscriptionStatusCompleted {
-			log.Println("Transcription job completed.")
+		for _, result := range resp.Results {
+			for _, alt := range result.Alternatives {
+				fmt.Println(*alt.Transcript)
+			}
+		}
+
+		if resp.StreamingStatusCode == transcribestreaming.StreamingStatusCompleted {
 			break
-		} else if jobStatus == transcribestreaming.StreamTranscriptionStatusFailed {
-			log.Fatal("Transcription job failed.")
 		}
-
-		// Delay before checking the job status again
-		time.Sleep(5 * time.Second)
 	}
+
+	// Stop playing audio
+	audioPlayer.Close()
 }
 
 // Convert an int16 array to a byte array
