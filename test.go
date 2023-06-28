@@ -5,11 +5,12 @@ import (
 	"os"
 
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/transcribestreaming"
+	"github.com/aws/aws-sdk-go/service/transcribe"
+	"github.com/aws/aws-sdk-go/service/transcribe/transcribestreaming"
 )
 
 func main() {
-	// Replace "your-file-path" with the path to your OGG audio file
+	// Replace "your-file-path" with the path to your audio file
 	filePath := "your-file-path"
 
 	// Create an AWS session
@@ -18,10 +19,15 @@ func main() {
 	}))
 
 	// Create a Transcribe Streaming client
-	client := transcribestreaming.New(sess)
+	streamingClient := transcribestreaming.New(sess)
 
-	// Create a stream for transcription
-	stream, err := client.StartStreamTranscription(nil)
+	// Start a stream transcription
+	startStreamTranscriptionInput := &transcribestreaming.StartStreamTranscriptionInput{
+		LanguageCode: transcribe.LanguageCodeEnUS, // Replace with the desired language code
+		MediaSampleRateHertz: aws.Int64(44100),     // Replace with the actual sample rate of your audio file
+		MediaEncoding:       aws.String(transcribestreaming.MediaEncodingPcm),
+	}
+	stream, err := streamingClient.StartStreamTranscription(startStreamTranscriptionInput)
 	if err != nil {
 		fmt.Println("Failed to start stream transcription:", err)
 		return
@@ -76,19 +82,23 @@ func main() {
 	}
 
 	// Get the transcription results
-	results := stream.GetTranscriptResultStream()
+	getTranscriptResultStreamInput := &transcribestreaming.GetTranscriptResultStreamInput{
+		RequestId: stream.RequestId,
+	}
+	results, err := streamingClient.GetTranscriptResultStream(getTranscriptResultStreamInput)
+	if err != nil {
+		fmt.Println("Failed to get transcript result stream:", err)
+		return
+	}
 
 	// Print the transcript
-	for {
-		select {
-		case result := <-results:
-			if result.IsPartial() {
-				// Handle partial result
-				fmt.Println("Partial transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
-			} else {
-				// Handle final result
-				fmt.Println("Final transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
-			}
+	for result := range results {
+		if result.IsPartial() {
+			// Handle partial result
+			fmt.Println("Partial transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
+		} else {
+			// Handle final result
+			fmt.Println("Final transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
 		}
 	}
 }
