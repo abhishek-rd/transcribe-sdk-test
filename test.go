@@ -3,13 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/transcribestreamingservice"
 )
 
 func main() {
-	// Replace "your-file-path" with the path to your audio file
+	// Replace "your-file-path" with the path to your OGG file
 	filePath := "your-file-path"
 
 	// Create an AWS session
@@ -21,7 +23,11 @@ func main() {
 	client := transcribestreamingservice.New(sess)
 
 	// Create a stream for transcription
-	stream, err := client.StartStreamTranscription(nil)
+	stream, err := client.StartStreamTranscription(&transcribestreamingservice.StartStreamTranscriptionInput{
+		LanguageCode:        aws.String("en-US"), // Replace with the desired language code
+		MediaSampleRateHertz: aws.Int64(16000),   // Replace with the actual sample rate of your audio file
+		MediaEncoding:       aws.String("ogg-opus"),
+	})
 	if err != nil {
 		fmt.Println("Failed to start stream transcription:", err)
 		return
