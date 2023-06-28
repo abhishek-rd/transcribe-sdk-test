@@ -75,19 +75,28 @@ func main() {
 		return
 	}
 
-	// Get the transcription results
-	results := stream.GetTranscriptResultStream()
-
-	// Print the transcript
+	// Process the event stream for transcription results
 	for {
-		select {
-		case result := <-results:
-			if result.IsPartial() {
-				// Handle partial result
-				fmt.Println("Partial transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
-			} else {
-				// Handle final result
-				fmt.Println("Final transcript:", *result.Transcript.Results[0].Alternatives[0].Transcript)
+		event, err := stream.Recv()
+		if err != nil {
+			fmt.Println("Failed to receive event:", err)
+			return
+		}
+
+		switch event.GetEventType() {
+		case transcribestreamingservice.EventTypeTranscript:
+			transcriptEvent := event.GetTranscriptEvent()
+			if transcriptEvent != nil {
+				results := transcriptEvent.GetTranscript().GetResults()
+				for _, result := range results {
+					if result.IsPartial() {
+						// Handle partial result
+						fmt.Println("Partial transcript:", *result.GetAlternatives()[0].GetTranscript())
+					} else {
+						// Handle final result
+						fmt.Println("Final transcript:", *result.GetAlternatives()[0].GetTranscript())
+					}
+				}
 			}
 		}
 	}
