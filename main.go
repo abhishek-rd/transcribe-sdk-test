@@ -1,61 +1,63 @@
-// ERROR
-//PS D:\Development\Transcribe\test> go run main.go
-//main.go:6:2: no required module provides package github.com/aws/aws-sdk-go-v2/service/transcribestreamingservice; to add it:
-//        go get github.com/aws/aws-sdk-go-v2/service/transcribestreamingservice
-//PS D:\Development\Transcribe\test> go get github.com/aws/aws-sdk-go-v2/service/transcribestreamingservice
-//go: module github.com/aws/aws-sdk-go-v2@upgrade found (v1.18.1), but does not contain package github.com/aws/aws-sdk-go-v2/service/transcribestreamingservice
-
-
 package main
 
 import (
-    "fmt"
-    "io"
-	"github.com/aws/aws-sdk-go-v2/service/transcribestreamingservice"
+	"context"
+	"log"
+	"os"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/transcribestreamingservice"
 )
 
 func main() {
-    // Create a transcribe streaming client
-    client := transcribestreamingservice.NewClient()
+	// Create a new AWS session
+	sess := session.Must(session.NewSession())
 
-    // Get the file to transcribe
-    file, err := os.Open("audio.ogg")
-    if err != nil {
-        fmt.Println(err)
-        return
-    }
+	// Create a client for the Transcribe Streaming service in the desired region
+	client := transcribestreamingservice.New(sess, aws.NewConfig().WithRegion("us-west-2"))
+	lc := "en-US"
+	me := "pcm"
+	// Start the stream transcription
+	resp, err := client.StartStreamTranscription(&transcribestreamingservice.StartStreamTranscriptionInput{
+		LanguageCode:         &lc,//aws.String(transcribestreamingservice.LanguageCodeEnUs),
+		MediaEncoding:        &me,//aws.String(transcribestreamingservice.MediaEncodingOggOpus),
+		MediaSampleRateHertz: aws.Int64(16000),
+	})
+	if err != nil {
+		log.Fatalf("failed to start streaming, %v", err)
+	}
 
-    // Split the file into chunks
-    chunkSize := 1024 * 1024 // 1 MB
-    var chunks [][]byte
-    for {
-        bytes := make([]byte, chunkSize)
-        n, err := file.Read(bytes)
-        if err == io.EOF {
-            break
-        } else if err != nil {
-            fmt.Println(err)
-            return
-        }
+	// Get the transcription stream
+	stream := resp.GetStream()
 
-        chunks = append(chunks, bytes)
-    }
+	// Close the stream when the function exits
+	defer stream.Close()
 
-    // Transcribe the chunks
-    for _, chunk := range chunks {
-        // Create an audio event
-        audioEvent := transcribestreamingservice.AudioEvent{
-            AudioChunk: chunk,
-        }
+	// Open the audio file
+	audioFile, err := os.Open("tests_integration_assets_test.wav")
+	if err != nil {
+		log.Fatalf("failed to open audio file, %v", err)
+	}
+	defer audioFile.Close()
 
-        // Send the audio event to the transcribe streaming client
-        client.SendAudioEvent(audioEvent)
-    }
-
-    // Wait for the transcription to finish
-    client.WaitUntilTranscriptionComplete()
-
-    // Print the transcript
-    fmt.Println(client.Transcript())
+	// Stream audio from the file to the stream writer
+	transcribestreamingservice.StreamAudioFromReader(context.Background(), stream.Writer, 10*1024, audioFile)
+	var textout string
+	// Process events from the stream
+	for event := range stream.Events() {
+		switch e := event.(type) {
+		case *transcribestreamingservice.TranscriptEvent:
+			for _, res := range e.Transcript.Results {
+				if !*res.IsPartial {
+					for _, alt := range res.Alternatives {
+						textout += aws.StringValue(alt.Transcript) + " "
+					}
+				}
+			}
+		default:
+			log.Fatalf("unexpected event, %T", event)
+		}
+	}
+	log.Printf("Transcribed text: %s", textout)
 }
